@@ -1,0 +1,647 @@
+# Sprint 2 — Explicación con Código
+
+> Cada sección muestra **qué archivo** se creó o modificó, y **qué hace el código**.
+> Las partes de Gonza están marcadas con 🟡.
+
+---
+
+## 1. 🏗️ PBI-S2-01 — Modelado de la Base de Datos
+**Responsable:** Cortez Zamora Leonardo
+
+### [src/types/database.ts](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/types/database.ts)
+
+Este archivo define la "forma" de todos los datos. Es como el plano del edificio de datos: no guarda nada, solo describe cómo luce cada tabla.
+
+```typescript
+// Los 3 roles posibles en el sistema
+export type Rol = 'residente' | 'admin' | 'tecnico'
+
+// Los 3 estados que puede tener una cuenta
+export type EstadoCuenta = 'pendiente' | 'activo' | 'bloqueado'
+
+// Así luce un usuario en la base de datos
+export type Profile = {
+  id: string
+  email: string
+  nombre: string
+  apellido: string
+  telefono: string
+  rol: Rol                        // residente | admin | tecnico
+  piso: string
+  departamento: string
+  estado_cuenta: EstadoCuenta     // pendiente | activo | bloqueado
+  empresa_tercero: string | null  // solo aplica para técnicos
+  created_at: string
+  updated_at: string
+}
+
+// Así luce una solicitud de mantenimiento
+export type Solicitud = {
+  id: string
+  residente_id: string
+  tipo: 'mantenimiento' | 'reparacion' | 'queja' | 'sugerencia' | 'otro'
+  categoria: 'plomeria' | 'electricidad' | 'limpieza' | 'seguridad' | 'areas_comunes' | 'otro'
+  descripcion: string
+  estado: 'pendiente' | 'asignada' | 'en_progreso' | 'resuelta' | 'cerrada'
+  // ...
+}
+
+// Registro de todas las acciones importantes (auditoría)
+export type AuditLog = {
+  id: string
+  usuario_id: string | null
+  accion: string        // ej: 'bloquear_cuenta', 'crear_invitacion'
+  entidad: string | null
+  resultado: string | null
+  created_at: string
+}
+```
+
+> [!NOTE]
+> Este archivo simplemente **describe** los datos. Es como decir "un usuario tiene estos campos". La base de datos real vive en Supabase y la armó Cortez con migraciones SQL y reglas de seguridad (RLS).
+
+---
+
+## 2. 🟡 PBI-AUTH-06 — Invitar Usuarios por Email
+**Responsable:** Gonza Morales Yoel
+
+> [!IMPORTANT]
+> 🟡 **GONZA** — Esta funcionalidad completa es de Gonza. Dos archivos: uno de pantalla y uno de servidor.
+
+### [src/components/admin/ModalInvitacion.tsx](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/components/admin/ModalInvitacion.tsx)
+El popup que ve el admin para invitar a alguien.
+
+```tsx
+// El modal recibe dos funciones: qué hacer al enviar y qué hacer al cerrar
+type Props = {
+  onEnviado: (email: string) => void  // se llama cuando el envío fue exitoso
+  onCerrar: () => void                // se llama al cerrar sin enviar
+}
+
+export default function ModalInvitacion({ onEnviado, onCerrar }: Props) {
+  const { enviarInvitacion, cargando, error } = useInvitacion()
+
+  // Estado del formulario (todos los campos)
+  const [form, setForm] = useState({
+    email: '',
+    nombre: '',
+    rol: 'residente' as Rol,   // por defecto: residente
+    piso: '',
+    departamento: '',
+    empresa_tercero: '',
+  })
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    // Validar campos requeridos...
+    const ok = await enviarInvitacion({
+      email: form.email,
+      rol: form.rol,
+      nombre: form.nombre,
+      // Si el rol es técnico, incluye la empresa; si no, lo omite
+      empresa_tercero: form.rol === 'tecnico' ? form.empresa_tercero : undefined,
+    })
+    if (ok) onEnviado(form.email)  // ✅ Avisa al padre que salió bien
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Fondo oscuro que cierra el modal al hacer clic */}
+      <div className="absolute inset-0 bg-black/40" onClick={onCerrar} />
+
+      <div className="relative bg-white rounded-xl p-6 w-full max-w-lg">
+        <h3>Invitar usuario</h3>
+        <form onSubmit={handleSubmit}>
+          <input type="email" placeholder="correo@ejemplo.com" />
+          <input type="text" placeholder="Nombre" />
+          <select> {/* Residente / Técnico / Admin */} </select>
+          {/* Si es técnico, aparece campo de empresa */}
+          {form.rol === 'tecnico' && <input placeholder="TecnoEdif SAC" />}
+          <input placeholder="Piso" />
+          <input placeholder="Departamento (4B)" />
+          <button type="submit">Enviar invitación</button>
+        </form>
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+### [supabase/functions/invitaciones/index.ts](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/supabase/functions/invitaciones/index.ts)
+El servidor que procesa la invitación. Corre en la nube (Supabase Edge Functions).
+
+```typescript
+Deno.serve(async (req: Request) => {
+  // 1. Verificar que quien llama está autenticado
+  const token = req.headers.get('authorization').replace('Bearer ', '')
+  const { data: { user: callerUser } } = await supabaseAdmin.auth.getUser(token)
+
+  if (!callerUser) return Response(401) // ❌ No autorizado
+
+  // 2. Verificar que es admin (no cualquiera puede invitar)
+  const { data: callerProfile } = await supabaseAdmin
+    .from('usuarios')
+    .select('rol')
+    .eq('id', callerUser.id)
+    .single()
+
+  if (callerProfile?.rol !== 'admin') return Response(403) // ❌ Solo admins
+
+  // 3. Leer los datos del formulario
+  const { email, rol, nombre, piso, departamento, empresa_tercero } = await req.json()
+
+  // 4. Supabase crea el usuario y manda el email automáticamente
+  //    El link del email lleva al usuario a /activar para poner su contraseña
+  const { error } = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+    data: { nombre, rol, piso, departamento, empresa_tercero },
+    redirectTo: `https://zity.site/activar`,
+  })
+
+  // 5. Guardar en tabla 'invitaciones' para poder rastrearla después
+  await supabaseAdmin.from('invitaciones').insert({
+    email, rol, nombre, piso, departamento,
+    token: crypto.randomUUID(),
+    creada_por: callerUser.id,  // quién la creó
+  })
+
+  // 6. Registrar en audit_log (historial de acciones)
+  await supabaseAdmin.from('audit_log').insert({
+    usuario_id: callerUser.id,
+    accion: 'crear_invitacion',
+    resultado: 'exitoso',
+  })
+
+  return Response({ success: true }) // ✅
+})
+```
+
+---
+
+## 3. 📋 PBI-S2-02 — Panel Admin: Lista de Usuarios
+**Responsable:** Santiago Flores Carlos
+
+### [src/hooks/useUsuarios.ts](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/hooks/useUsuarios.ts)
+El "conector" con la base de datos. Busca usuarios aplicando filtros.
+
+```typescript
+export function useUsuarios(filtros: FiltrosState) {
+  const [usuarios, setUsuarios] = useState<Profile[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    // Construir la consulta base
+    let query = supabase
+      .from('usuarios')
+      .select('*')
+      .order('created_at', { ascending: false }) // más recientes primero
+
+    // Aplicar filtros solo si fueron seleccionados
+    if (filtros.rol)    query = query.eq('rol', filtros.rol)
+    if (filtros.estado) query = query.eq('estado_cuenta', filtros.estado)
+
+    // Ejecutar con timeout de 8 segundos
+    const { data } = await query
+    setUsuarios(data ?? [])
+  }, [filtros.rol, filtros.estado]) // se re-ejecuta si cambia algún filtro
+
+  return { usuarios, loading, refetch }
+}
+```
+
+---
+
+### [src/components/admin/FiltrosUsuarios.tsx](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/components/admin/FiltrosUsuarios.tsx)
+Dos menús desplegables para filtrar la tabla.
+
+```tsx
+export default function FiltrosUsuarios({ filtros, onChange }) {
+  return (
+    <div className="flex gap-3">
+      {/* Filtro por rol */}
+      <select onChange={e => onChange({ ...filtros, rol: e.target.value })}>
+        <option value="">Todos los roles</option>
+        <option value="admin">Admin</option>
+        <option value="residente">Residente</option>
+        <option value="tecnico">Técnico</option>
+      </select>
+
+      {/* Filtro por estado */}
+      <select onChange={e => onChange({ ...filtros, estado: e.target.value })}>
+        <option value="">Todos los estados</option>
+        <option value="activo">Activo</option>
+        <option value="pendiente">Pendiente</option>
+        <option value="bloqueado">Bloqueado</option>
+      </select>
+
+      {/* Botón limpiar, solo aparece si hay algún filtro activo */}
+      {(filtros.rol || filtros.estado) && (
+        <button onClick={() => onChange({ rol: '', estado: '' })}>
+          Limpiar filtros
+        </button>
+      )}
+    </div>
+  )
+}
+```
+
+---
+
+### [src/components/admin/BadgeEstado.tsx](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/components/admin/BadgeEstado.tsx)
+La etiquetita de colores para el estado de la cuenta.
+
+```tsx
+// Configuración de colores por estado
+const config = {
+  activo:    { label: 'activo',    classes: 'bg-green/10 text-green'   }, // 🟢
+  pendiente: { label: 'pendiente', classes: 'bg-yellow/10 text-yellow' }, // 🟡
+  bloqueado: { label: 'bloqueado', classes: 'bg-red/10 text-red'       }, // 🔴
+}
+
+export default function BadgeEstado({ estado }: { estado: EstadoCuenta }) {
+  const { label, classes } = config[estado]
+  // Resultado: una pastillita de color con el texto del estado
+  return <span className={`rounded-full px-2.5 py-0.5 text-xs ${classes}`}>{label}</span>
+}
+```
+
+---
+
+### [src/components/admin/TablaUsuarios.tsx](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/components/admin/TablaUsuarios.tsx)
+La tabla principal con todos los usuarios.
+
+```tsx
+export default function TablaUsuarios({ usuarios, loading, onBloquear, onDesbloquear }) {
+  // Función helper: muestra "hace 3 días", "hace 2 horas", etc.
+  function tiempoTranscurrido(fechaISO: string): string {
+    const diffMs = Date.now() - new Date(fechaISO).getTime()
+    const rtf = new Intl.RelativeTimeFormat('es', { numeric: 'auto' })
+    // Calcula si mostrar en días, horas o minutos
+    const diffDays = Math.floor(diffMs / 86_400_000)
+    if (diffDays >= 1) return rtf.format(-diffDays, 'day') // "hace 3 días"
+    // ...
+  }
+
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>Nombre</th>
+          <th>Email</th>
+          <th>Rol</th>
+          <th>Piso / Depto</th>
+          <th>Estado</th>       {/* Usa BadgeEstado aquí */}
+          <th>Registro</th>
+          <th />                {/* Columna de acciones */}
+        </tr>
+      </thead>
+      <tbody>
+        {usuarios.map(usuario => (
+          <tr key={usuario.id}>
+            <td>{usuario.nombre} {usuario.apellido}</td>
+            <td>{usuario.email}</td>
+            <td>
+              {usuario.rol}
+              {/* Técnicos muestran su empresa debajo */}
+              {usuario.rol === 'tecnico' && <span>{usuario.empresa_tercero}</span>}
+            </td>
+            <td>{usuario.piso && `Piso ${usuario.piso} — ${usuario.departamento}`}</td>
+            <td><BadgeEstado estado={usuario.estado_cuenta} /></td>
+            <td>{tiempoTranscurrido(usuario.created_at)}</td>
+            <td>
+              {/* El botón cambia según el estado actual */}
+              {usuario.estado_cuenta === 'bloqueado'
+                ? <button onClick={() => onDesbloquear(usuario)}>Desbloquear</button>
+                : <button onClick={() => onBloquear(usuario)}>Bloquear</button>
+              }
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+```
+
+---
+
+## 4. 🪜 PBI-AUTH-01b — Registro en 2 Pasos con Barra de Progreso
+**Responsable:** Cortez Zamora Leonardo
+
+### [src/components/BarraProgreso.tsx](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/components/BarraProgreso.tsx)
+Componente simple que muestra el % completado.
+
+```tsx
+type Props = { pasoActual: number; totalPasos: number }
+
+export default function BarraProgreso({ pasoActual, totalPasos }: Props) {
+  // Si estamos en paso 1 de 2 → 50%. En paso 2 de 2 → 100%
+  const porcentaje = Math.round((pasoActual / totalPasos) * 100)
+
+  return (
+    <div>
+      <div className="flex justify-between">
+        <span>Paso {pasoActual} de {totalPasos}</span>
+        <span>{porcentaje}%</span>
+      </div>
+      {/* La barra en sí: transición animada de 500ms al cambiar */}
+      <div className="h-1.5 bg-gray-200 rounded-full">
+        <div
+          className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-500"
+          style={{ width: `${porcentaje}%` }}   // ← el ancho cambia con el paso
+        />
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+### [src/pages/Register.tsx](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/pages/Register.tsx) (fragmento clave)
+El formulario de registro, ahora dividido en 2 pasos.
+
+```tsx
+export default function Register() {
+  const [step, setStep] = useState<1 | 2>(1) // paso actual: 1 o 2
+
+  // Datos del paso 1 (credenciales)
+  const [step1, setStep1] = useState({ email: '', password: '', confirmPassword: '' })
+
+  // Datos del paso 2 (info personal)
+  const [step2, setStep2] = useState({ nombre: '', apellido: '', telefono: '+51 ', piso: '', departamento: '', rol: 'residente' })
+
+  // Validación del paso 1 antes de avanzar
+  function handleNext() {
+    // Valida email, contraseña fuerte, que coincidan...
+    const errors = validateStep1()
+    if (Object.keys(errors).length > 0) { setStep1Errors(errors); return }
+    setStep(2) // ✅ Pasa al siguiente paso
+  }
+
+  // Envío final en el paso 2
+  async function handleSubmit(e) {
+    e.preventDefault()
+    const errors = validateStep2()
+    if (Object.keys(errors).length > 0) { setStep2Errors(errors); return }
+
+    // Llama a Supabase para crear la cuenta
+    await signUp(step1.email, step1.password, {
+      nombre: step2.nombre, apellido: step2.apellido,
+      telefono: step2.telefono, piso: step2.piso,
+      departamento: step2.departamento, rol: step2.rol,
+    })
+    navigate('/verify-email') // → va a la pantalla de "verificá tu correo"
+  }
+
+  return (
+    <AuthLayout title="Crear cuenta">
+      {/* La barra de progreso siempre visible arriba */}
+      <BarraProgreso pasoActual={step} totalPasos={2} />
+
+      {/* Indicador de puntos: ① ── ② */}
+      <div className="step-indicator">
+        <div className={step === 1 ? 'active' : 'completed'}>
+          {step > 1 ? '✓' : '1'}
+        </div>
+        <div className="line" />
+        <div className={step === 2 ? 'active' : 'pending'}>2</div>
+      </div>
+
+      {/* Contenido condicional: muestra un paso u otro */}
+      {step === 1 && (
+        <div>
+          {/* Email, contraseña, confirmar contraseña */}
+          <button onClick={handleNext}>Continuar →</button>
+        </div>
+      )}
+
+      {step === 2 && (
+        <form onSubmit={handleSubmit}>
+          {/* Nombre, apellido, teléfono, piso, departamento, rol */}
+          <button onClick={handleBack}>← Atrás</button>
+          <button type="submit">Crear cuenta</button>
+        </form>
+      )}
+    </AuthLayout>
+  )
+}
+```
+
+---
+
+## 5. 🟡 PBI-S2-03 — Bloquear / Desbloquear Cuentas
+**Responsable:** Gonza Morales Yoel
+
+> [!IMPORTANT]
+> 🟡 **GONZA** — El modal de confirmación y la función del servidor son de Gonza.
+
+### [src/components/admin/ModalConfirmacion.tsx](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/components/admin/ModalConfirmacion.tsx)
+El popup de "¿Estás seguro?" que aparece antes de bloquear o desbloquear.
+
+```tsx
+type Props = {
+  titulo: string
+  mensaje: string
+  labelConfirmar: string              // texto del botón: "Bloquear" o "Desbloquear"
+  variante: 'peligro' | 'primario'    // rojo para bloquear, azul para desbloquear
+  cargando: boolean
+  onConfirmar: () => void
+  onCancelar: () => void
+}
+
+export default function ModalConfirmacion({ titulo, mensaje, labelConfirmar, variante, cargando, onConfirmar, onCancelar }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Clic en el fondo cancela */}
+      <div className="absolute inset-0 bg-black/40" onClick={onCancelar} />
+
+      <div className="relative bg-white rounded-xl p-6 max-w-md">
+        <h3>{titulo}</h3>         {/* ej: "Bloquear cuenta" */}
+        <p>{mensaje}</p>          {/* ej: "¿Estás seguro de bloquear a Juan García?" */}
+
+        <div className="flex gap-3 justify-end">
+          <button onClick={onCancelar}>Cancelar</button>
+          <button
+            onClick={onConfirmar}
+            // Rojo si es peligroso (bloquear), azul si no (desbloquear)
+            className={variante === 'peligro' ? 'bg-red text-white' : 'btn-primary'}
+          >
+            {cargando ? <Spinner /> : labelConfirmar}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+### [supabase/functions/bloquear-cuenta/index.ts](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/supabase/functions/bloquear-cuenta/index.ts)
+El servidor que ejecuta el bloqueo/desbloqueo. Corre en la nube.
+
+```typescript
+Deno.serve(async (req: Request) => {
+  // 1. Verificar que quien llama está autenticado
+  const token = req.headers.get('authorization').replace('Bearer ', '')
+  const { data: { user: callerUser } } = await supabaseAdmin.auth.getUser(token)
+  if (!callerUser) return Response(401)
+
+  // 2. Verificar que es admin
+  const { data: callerProfile } = await supabaseAdmin
+    .from('usuarios').select('rol').eq('id', callerUser.id).single()
+  if (callerProfile?.rol !== 'admin') return Response(403)
+
+  // 3. Leer qué acción se quiere hacer
+  const { usuario_id, accion } = await req.json()
+  // accion = 'bloquear' o 'desbloquear'
+
+  const nuevoEstado = accion === 'bloquear' ? 'bloqueado' : 'activo'
+
+  // 4. Cambiar el estado en la tabla 'usuarios'
+  await supabaseAdmin
+    .from('usuarios')
+    .update({ estado_cuenta: nuevoEstado })
+    .eq('id', usuario_id)
+
+  // 5. Si se bloquea: invalidar la sesión activa del usuario
+  //    ban_duration: '87600h' = 10 años (efectivamente permanente hasta que se desbloquee)
+  if (accion === 'bloquear') {
+    await supabaseAdmin.auth.admin.updateUserById(usuario_id, {
+      ban_duration: '87600h',  // si está logueado, lo expulsa inmediatamente
+    })
+  } else {
+    await supabaseAdmin.auth.admin.updateUserById(usuario_id, {
+      ban_duration: 'none',    // levanta el ban → puede volver a entrar
+    })
+  }
+
+  // 6. Registrar en audit_log
+  await supabaseAdmin.from('audit_log').insert({
+    usuario_id: callerUser.id,
+    accion: accion === 'bloquear' ? 'bloquear_cuenta' : 'desbloquear_cuenta',
+    entidad: 'usuarios',
+    entidad_id: usuario_id,
+    resultado: 'exitoso',
+  })
+
+  return Response({ success: true, estado: nuevoEstado }) // ✅
+})
+```
+
+---
+
+### [src/pages/admin/Usuarios.tsx](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/src/pages/admin/Usuarios.tsx) — Cómo se conectan los dos modales de Gonza
+
+```tsx
+export default function AdminUsuarios() {
+  const [tipoAccion, setTipoAccion] = useState<'bloquear' | 'desbloquear' | null>(null)
+  const [usuarioAccion, setUsuarioAccion] = useState<Profile | null>(null)
+  const [mostrarInvitacion, setMostrarInvitacion] = useState(false)
+
+  // Cuando el admin confirma la acción en el modal
+  async function confirmarAccion() {
+    // Llama a la Edge Function de Gonza: bloquear-cuenta
+    const { data } = await supabase.functions.invoke('bloquear-cuenta', {
+      body: { usuario_id: usuarioAccion.id, accion: tipoAccion },
+    })
+    if (data?.success) refetch() // refresca la tabla automáticamente
+  }
+
+  return (
+    <div>
+      {/* ... tabla de usuarios ... */}
+
+      {/* Botón que abre el ModalInvitacion de Gonza */}
+      <button onClick={() => setMostrarInvitacion(true)}>Invitar usuario</button>
+
+      {/* ModalInvitacion de Gonza — aparece al hacer clic en "Invitar usuario" */}
+      {mostrarInvitacion && (
+        <ModalInvitacion
+          onEnviado={(email) => { setMostrarInvitacion(false); mostrarConfirmacion(email) }}
+          onCerrar={() => setMostrarInvitacion(false)}
+        />
+      )}
+
+      {/* ModalConfirmacion de Gonza — aparece al hacer clic en "Bloquear" o "Desbloquear" */}
+      {tipoAccion && usuarioAccion && (
+        <ModalConfirmacion
+          titulo={tipoAccion === 'bloquear' ? 'Bloquear cuenta' : 'Desbloquear cuenta'}
+          mensaje={`¿Estás seguro de ${tipoAccion} la cuenta de ${usuarioAccion.nombre}?`}
+          variante={tipoAccion === 'bloquear' ? 'peligro' : 'primario'}
+          onConfirmar={confirmarAccion}
+          onCancelar={() => setUsuarioAccion(null)}
+        />
+      )}
+    </div>
+  )
+}
+```
+
+---
+
+## 6. 📄 PBI-14b — Actualizar README y Seed
+**Responsable:** Santiago Flores Carlos
+
+### [README.md](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/README.md)
+
+```markdown
+## Stack
+| Capa       | Tecnología                              |
+|------------|-----------------------------------------|
+| Frontend   | React + Vite + TailwindCSS              |
+| Auth + DB  | Supabase (Postgres + Auth + Realtime)   |
+| Deploy     | Vercel                                  |
+| CI/CD      | GitHub Actions                          |
+| Testing    | Vitest + Testing Library                |
+```
+
+### [scripts/seed.js](file:///c:/Users/USUARIO/Desktop/Programaci%C3%B3n/UNTELS/IS/Zity-main/scripts/seed.js)
+Script que carga datos ficticios a la base de datos para poder probar la app sin datos reales.
+
+```javascript
+// Inserta usuarios de prueba: admins, residentes y técnicos
+// con contraseñas conocidas, pisos y departamentos de ejemplo.
+// Sin PII real — todos los datos son inventados.
+npm run seed  // ← comando para ejecutarlo
+```
+
+---
+
+## 🗺️ Mapa de Archivos del Sprint 2
+
+```
+Zity-main/
+│
+├── src/
+│   ├── types/
+│   │   └── database.ts                ← 🏗️ Cortez: tipos y estructura de la BD
+│   │
+│   ├── hooks/
+│   │   └── useUsuarios.ts             ← 📋 Santiago: consulta de usuarios con filtros
+│   │
+│   ├── components/
+│   │   ├── BarraProgreso.tsx          ← 🪜 Cortez: barra de progreso del registro
+│   │   └── admin/
+│   │       ├── BadgeEstado.tsx        ← 📋 Santiago: pastillita de colores de estado
+│   │       ├── FiltrosUsuarios.tsx    ← 📋 Santiago: menús de filtro
+│   │       ├── TablaUsuarios.tsx      ← 📋 Santiago: tabla de usuarios
+│   │       ├── ModalConfirmacion.tsx  ← 🟡 GONZA: popup "¿estás seguro?"
+│   │       └── ModalInvitacion.tsx    ← 🟡 GONZA: popup de invitar usuario
+│   │
+│   └── pages/
+│       ├── Register.tsx               ← 🪜 Cortez: formulario de 2 pasos
+│       └── admin/
+│           └── Usuarios.tsx           ← 📋 Santiago (+🟡 Gonza): página de gestión
+│
+├── supabase/functions/
+│   ├── invitaciones/index.ts          ← 🟡 GONZA: servidor de invitaciones
+│   └── bloquear-cuenta/index.ts      ← 🟡 GONZA: servidor de bloqueo/desbloqueo
+│
+├── scripts/
+│   └── seed.js                        ← 📄 Santiago: datos de prueba
+│
+└── README.md                          ← 📄 Santiago: documentación del proyecto
+```
