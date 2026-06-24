@@ -1,60 +1,102 @@
-# Decisiones de Arquitectura: Proyecto Zity
+# Decisiones de Arquitectura y Stack Tecnológico: Proyecto Zity
 
-Este documento explica en detalle la arquitectura elegida para Zity, el stack tecnológico subyacente y la justificación detrás de cada elección. El objetivo de este documento es servir como guía para defender y explicar las decisiones técnicas del proyecto ante stakeholders o evaluadores.
-
----
-
-## 1. Patrón Arquitectónico: Serverless / BaaS (Backend as a Service)
-
-Zity no utiliza una arquitectura tradicional de tres capas (Frontend ↔ Backend propio Node.js/Java ↔ Base de datos). En su lugar, utiliza un modelo **BaaS (Backend as a Service)** mediante Supabase.
-
-### ¿Por qué esta arquitectura y no otra (ej. Node.js + Express)?
-* **Velocidad de iteración (Time-to-market):** El proyecto es un MVP diseñado para desarrollarse en 16 semanas. Construir un backend propio implica programar desde cero la autenticación (JWT), reseteo de contraseñas, envío de emails y endpoints CRUD. Supabase da todo esto listo y expone una API segura automática desde Postgres.
-* **Reducción de Código Boilerplate:** Nos permite enfocarnos en la lógica de negocio en lugar de la infraestructura.
-* **Tiempo Real:** Se requería notificar a los residentes en tiempo real. Implementar WebSockets (Socket.io) requiere gestión compleja de conexiones; Supabase Realtime lo incluye de forma nativa.
+Este documento explica en detalle **todas las tecnologías** y decisiones arquitectónicas que componen el proyecto Zity. El objetivo de este documento es servir como guía exhaustiva para defender y explicar las decisiones técnicas (qué es cada cosa y por qué se eligió frente a otras alternativas) ante stakeholders o evaluadores.
 
 ---
 
-## 2. El Stack Tecnológico: Justificaciones e Innovaciones (2026)
+## 1. Patrón Arquitectónico Global: Serverless / BaaS (Backend as a Service)
 
-### 2.1 Frontend: React 19
-* **¿Por qué React?** Es el estándar de la industria, con un ecosistema masivo y excelente soporte para SPAs (Single Page Applications).
-* **Innovaciones de la v19:** 
-  * **React Compiler:** Hemos dejado de usar `useMemo` y `useCallback` manualmente. El compilador de React 19 optimiza automáticamente el renderizado analizando las dependencias en tiempo de compilación. Esto reduce errores humanos y mejora el rendimiento por defecto (levanta el "suelo de rendimiento").
-  * **Actions API:** Simplifica enormemente el manejo de estados asíncronos (cargas, errores, actualizaciones optimistas) sin necesidad de escribir docenas de variables `useState` para spinners de carga.
+Zity no utiliza una arquitectura tradicional de servidor (Frontend ↔ Backend propio en Node.js/Java ↔ Base de datos). En su lugar, utiliza un modelo **BaaS**.
 
-### 2.2 Herramienta de Build: Vite 8
-* **¿Por qué Vite y no Webpack / Create React App?** Webpack empaqueta todo el código antes de servirlo, lo cual es lento a medida que el proyecto crece. Vite utiliza módulos ES nativos del navegador durante el desarrollo. El servidor arranca en milisegundos y el Hot Module Replacement (HMR) es instantáneo. 
-
-### 2.3 Estilos: TailwindCSS v4
-* **¿Por qué Tailwind?** Es "Utility-First". Permite construir diseños a medida y responsivos directamente en el HTML/JSX sin tener que inventar nombres de clases CSS ni saltar entre archivos.
-* **Innovaciones de la v4:** Tailwind v4 (lanzado recientemente) reescribió su motor (Oxide) en Rust y C++. Ya no requiere Node.js ni el pesado archivo `tailwind.config.js`. Ahora todo se configura mediante CSS nativo (`@theme`), haciéndolo hasta 10 veces más rápido que la v3.
-
-### 2.4 Base de Datos y Auth: Supabase (PostgreSQL)
-* **¿Por qué Relacional (SQL) y no NoSQL (MongoDB)?** Zity maneja datos altamente estructurados (Usuarios pertenecen a Edificios, Solicitudes a Técnicos). PostgreSQL garantiza **integridad referencial**.
-* **Seguridad (RLS):** Supabase delega la seguridad a la base de datos mediante **Row Level Security (RLS)**. La validación del token JWT y el ID del usuario (`auth.uid()`) se hace a nivel de fila en la base de datos, lo que significa que el backend es seguro independientemente de los fallos del frontend.
+* **¿Qué es?** Es un modelo donde la infraestructura del backend, las bases de datos y la autenticación son gestionados por un proveedor de la nube de terceros (en este caso, Supabase).
+* **¿Por qué se eligió?** Velocidad de iteración (Time-to-market). Zity es un MVP diseñado para desarrollarse en 16 semanas (sprints). Construir un backend propio implica programar desde cero la autenticación (JWT), reseteo de contraseñas, envío de emails y todos los endpoints (CRUD). Este patrón nos permite omitir el "código repetitivo" (boilerplate) y enfocarnos exclusivamente en la lógica de negocio del mantenimiento de edificios.
 
 ---
 
-## 3. Seguridad e Incidentes Reales en la Industria
+## 2. Frontend y Ecosistema Cliente
 
-Al utilizar servicios administrados (BaaS/PaaS), es crítico entender cómo protegerse ante vulnerabilidades de la cadena de suministro o configuraciones erróneas.
+### 2.1 TypeScript (v6)
+* **¿Qué es?** Es un superconjunto de JavaScript que añade tipado estático opcional al lenguaje.
+* **¿Por qué se eligió?** JavaScript puro es propenso a errores en tiempo de ejecución. Al usar TypeScript, los errores (como intentar leer propiedades de una "solicitud" que no existe) se detectan en el editor de código antes de correr la aplicación. Asegura que el frontend se comunique perfectamente con los tipos de datos de la base de datos de Supabase.
 
-### 3.1 El Incidente de Vercel (Abril 2026)
-Recientemente (abril de 2026), Vercel sufrió un incidente de seguridad grave, pero es vital entender **cómo ocurrió y por qué Zity está protegido**:
-* **El Ataque:** Fue un ataque de cadena de suministro. Un empleado de una herramienta de terceros (Context.ai) fue infectado con malware (Lumma Stealer), robando tokens OAuth. Los atacantes usaron esto para secuestrar la cuenta de Google Workspace de un empleado de Vercel, evadiendo el MFA (Múltiple Factor de Autenticación).
-* **El Impacto:** Los atacantes lograron acceder a la red interna de Vercel y extrajeron **variables de entorno no sensibles** de algunos clientes.
-* **La Defensa de Zity:** Vercel encripta las variables marcadas como "Sensibles" de tal forma que ni siquiera sus propios empleados (o atacantes en su red interna) pueden leerlas en texto plano. En Zity, llaves maestras como `SUPABASE_SERVICE_ROLE_KEY` o tokens de base de datos **están estrictamente marcados como "Sensibles" en el panel de Vercel**, por lo que este ataque no habría comprometido nuestros datos críticos.
+### 2.2 React (v19)
+* **¿Qué es?** Una librería de JavaScript para construir interfaces de usuario interactivas basadas en componentes reutilizables.
+* **¿Por qué se eligió?** Es el estándar de la industria, garantizando soporte a largo plazo. 
+* **Innovaciones recientes:** En la versión 19 introduce el **React Compiler**, que automatiza la optimización del rendimiento (ya no hay que usar funciones complejas como `useMemo` a mano), y la **Actions API** que simplifica drásticamente el manejo de carga de datos y formularios asíncronos.
 
-### 3.2 Los "Hackeos" a Proyectos de Supabase
-Aunque Supabase como plataforma no ha sido vulnerada a nivel estructural, muchos proyectos que usan Supabase han sufrido exposiciones masivas de datos.
-* **Causa:** Estos incidentes siempre han sido de "Capa 8" (error humano del desarrollador). Ocurren cuando:
-  1. No se habilita RLS (Row Level Security), dejando la base de datos como una API pública abierta a todo el internet.
-  2. El desarrollador filtra por error la llave maestra (`service_role_key`) en el código frontend de React.
-* **Nuestra Mitigación:** En Zity, el RLS es mandatorio para toda tabla nueva desde el Sprint 0. Además, la `service_role_key` jamás se expone al cliente; solo se usa en las Edge Functions seguras del servidor (ej. para la función de bloquear cuentas).
+### 2.3 Vite (v8)
+* **¿Qué es?** Una herramienta de construcción (build tool) y servidor de desarrollo local para proyectos frontend. Reemplaza al antiguo "Create React App" o Webpack.
+* **¿Por qué se eligió?** Webpack empaqueta todo el código antes de mostrarlo, haciéndose lento a medida que el proyecto crece. Vite utiliza los módulos ES (ECMAScript) nativos del navegador. Esto significa que el servidor de desarrollo arranca en milisegundos y los cambios en el código se reflejan instantáneamente (Hot Module Replacement instantáneo).
+
+### 2.4 TailwindCSS (v4)
+* **¿Qué es?** Un framework CSS "Utility-First" que proporciona clases de bajo nivel (ej. `flex`, `pt-4`, `text-center`) para construir diseños directamente en el HTML/JSX.
+* **¿Por qué se eligió?** Permite maquetar interfaces extremadamente rápido sin la fricción de tener que inventar nombres de clases semánticas ni crear cientos de archivos `.css` separados.
+* **Innovaciones recientes:** La recién lanzada versión 4 ha reescrito su motor (llamado Oxide) en Rust/C++. Ya no necesita Node.js ni el pesado archivo de configuración `tailwind.config.js`. Todo se maneja a través de CSS nativo (`@theme`), haciéndolo hasta 10 veces más rápido que la v3.
+
+### 2.5 React Router (v7)
+* **¿Qué es?** La librería estándar de enrutamiento para React. Permite navegar entre diferentes páginas de la aplicación (`/login`, `/residente`, `/admin`) sin recargar el navegador.
+* **¿Por qué se eligió?** Proporciona herramientas nativas para proteger rutas según el rol del usuario (guardas de ruta) y evita accesos no autorizados a paneles administrativos.
 
 ---
 
-## 4. Conclusión Estratégica
+## 3. Backend, Datos y Autenticación
 
-La arquitectura elegida prioriza la **velocidad de entrega, la modernidad del stack y la seguridad por diseño**. Al usar herramientas automatizadas (React Compiler, Vite, Tailwind v4) y delegar la infraestructura a expertos (Supabase, Vercel), el equipo de desarrollo puede centrarse en el valor del negocio: el flujo de trabajo de mantenimiento del edificio, asegurando al mismo tiempo que los datos están protegidos contra vectores de ataque modernos.
+### 3.1 Supabase
+* **¿Qué es?** Una plataforma BaaS de código abierto basada enteramente en PostgreSQL. Es el núcleo del backend de Zity.
+* **¿Por qué se eligió?** Proporciona toda la infraestructura necesaria en un solo paquete:
+  * **PostgreSQL:** Base de datos relacional. Elegida sobre NoSQL (como MongoDB) porque los datos de condominios son altamente relacionales (Usuarios -> Edificios -> Solicitudes) y necesitamos **integridad referencial**.
+  * **Supabase Auth:** Gestiona el registro, verificación de emails, inicio de sesión y perfiles de usuario.
+  * **Supabase Storage:** Un sistema de almacenamiento de archivos (buckets) configurado para alojar las fotos de las solicitudes de mantenimiento.
+  * **Supabase Realtime:** Permite que las notificaciones y los cambios de estado en las solicitudes aparezcan en la pantalla del usuario en tiempo real sin recargar la página.
+  * **Edge Functions:** Pequeños scripts (escritos en Deno) que corren en servidores globales para realizar tareas de alta seguridad que no pueden hacerse en el frontend (ej. bloquear cuentas de usuarios forzosamente).
+
+---
+
+## 4. Despliegue y DevOps (CI/CD)
+
+### 4.1 Vercel
+* **¿Qué es?** Una plataforma en la nube (PaaS) diseñada para hospedar frameworks frontend y sitios estáticos. Es donde se aloja la página web de Zity para que cualquier persona pueda acceder desde internet.
+* **¿Por qué se eligió?** Está diseñado específicamente para React/Vite. Ofrece características esenciales:
+  * **Edge Network (CDN Global):** Distribuye la app en servidores alrededor del mundo, cargando rápido sin importar de dónde se acceda.
+  * **Preview Deployments:** Cada vez que hacemos una rama nueva de código, Vercel genera un enlace temporal único para probar los cambios antes de mandarlos a producción.
+  * **Despliegue sin fricción:** Se conecta a GitHub y se despliega automáticamente con cada nuevo "commit".
+
+### 4.2 GitHub Actions
+* **¿Qué es?** Plataforma de Integración Continua y Despliegue Continuo (CI/CD) integrada en GitHub.
+* **¿Por qué se eligió?** Actúa como nuestra "barrera de calidad". Se configuró para que, antes de que cualquier código nuevo llegue a Vercel, pase por procesos automáticos que revisan si hay errores de sintaxis (ESLint) o si algún test falló. Si algo falla, GitHub Actions bloquea el despliegue.
+
+---
+
+## 5. Calidad y Testing (Aseguramiento)
+
+### 5.1 Vitest
+* **¿Qué es?** Un framework para realizar pruebas unitarias y de integración, muy similar a Jest pero diseñado específicamente para funcionar con Vite.
+* **¿Por qué se eligió?** Es inmensamente más rápido que Jest porque usa la misma cadena de construcción que nuestro frontend (Vite), lo que ahorra tiempo de cómputo en nuestro pipeline de CI/CD. Se usa para probar la lógica core del sistema (ej. calcular métricas financieras o estados de solicitudes).
+
+### 5.2 Playwright
+* **¿Qué es?** Una herramienta para realizar pruebas End-to-End (E2E).
+* **¿Por qué se eligió?** A diferencia de las pruebas unitarias, Playwright levanta navegadores reales (Chrome, Safari) y simula el comportamiento humano real (hacer clics, llenar formularios). Lo elegimos para automatizar la verificación de los flujos críticos (ej. "Un residente inicia sesión, crea una solicitud y le aparece al admin").
+
+---
+
+## 6. Seguridad e Incidentes Reales en la Industria
+
+Al utilizar servicios administrados (BaaS/PaaS) como Vercel y Supabase, es crítico entender cómo protegerse ante vulnerabilidades modernas.
+
+### 6.1 El Incidente de Vercel (Abril 2026)
+* **¿Qué pasó?** Vercel sufrió un incidente real debido a un ataque de *cadena de suministro*. Empleados de una herramienta de terceros (Context.ai) fueron infectados con malware (Lumma Stealer), robando tokens y permitiendo a los atacantes secuestrar una cuenta interna de Vercel, evadiendo múltiples factores de autenticación (MFA).
+* **El Impacto:** Los atacantes lograron entrar a la red interna y robar **variables de entorno no sensibles** de algunos clientes.
+* **La Defensa de Zity:** Vercel posee un sistema de encriptación que protege las variables marcadas explícitamente como "Sensibles" (Sensitive). Ni siquiera los empleados de Vercel o los atacantes infiltrados pudieron desencriptarlas. En Zity, hemos mitigado este riesgo asegurando que todas las credenciales maestras (como la `SUPABASE_SERVICE_ROLE_KEY`) estén marcadas estrictamente como Sensibles, por lo que nuestros datos críticos nunca estuvieron en riesgo ante esta brecha.
+
+### 6.2 Los "Hackeos" a Proyectos de Supabase
+* **¿Qué pasó?** Aunque la plataforma de Supabase no ha sufrido hackeos estructurales que extraigan información desde el núcleo, la prensa ha reportado decenas de exposiciones masivas de datos en startups que usan Supabase.
+* **La Causa (Capa 8 / Error humano):** Estos incidentes ocurren exclusivamente cuando los desarrolladores cometen dos errores fatales:
+  1. Dejar apagado el RLS (Row Level Security), lo que expone toda la base de datos a internet de forma pública a través de la API REST generada.
+  2. Filtrar o incluir por error la llave maestra (`service_role_key`) en el código frontend (React/Vite), regalándole la base de datos a cualquier usuario que inspeccione la web.
+* **La Defensa de Zity:** Nuestro diseño requiere RLS mandatorio para absolutamente toda tabla nueva desde el Sprint 0. Toda solicitud que llega al backend intercepta el token criptográfico del usuario y solo devuelve la información que le corresponde. Además, la `service_role_key` jamás se empaqueta en el frontend; se ejecuta únicamente en entornos de servidor seguros (Edge Functions).
+
+---
+
+## 7. Conclusión Estratégica
+
+La arquitectura elegida para Zity prioriza la **velocidad de entrega, la modernidad del stack y la seguridad por diseño**. Al usar herramientas avanzadas (React Compiler, Vite, Tailwind v4 Oxide) y delegar la infraestructura a expertos de nivel empresarial (Supabase, Vercel), el equipo de desarrollo puede centrarse puramente en entregar valor de negocio y nuevas funcionalidades a los residentes y la administración, manteniendo los más altos estándares de resiliencia frente a ataques cibernéticos modernos.
