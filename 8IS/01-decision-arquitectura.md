@@ -84,9 +84,9 @@ Zity no utiliza una arquitectura tradicional de servidor (Frontend ↔ Backend p
 Al utilizar servicios administrados (BaaS/PaaS) como Vercel y Supabase, es crítico entender cómo protegerse ante vulnerabilidades modernas.
 
 ### 6.1 El Incidente de Vercel (Abril 2026)
-* **¿Qué pasó?** Vercel sufrió un incidente real debido a un ataque de *cadena de suministro*. Empleados de una herramienta de terceros (Context.ai) fueron infectados con malware (Lumma Stealer), robando tokens y permitiendo a los atacantes secuestrar una cuenta interna de Vercel, evadiendo múltiples factores de autenticación (MFA).
-* **El Impacto:** Los atacantes lograron entrar a la red interna y robar **variables de entorno no sensibles** de algunos clientes.
-* **La Defensa de Zity:** Vercel posee un sistema de encriptación que protege las variables marcadas explícitamente como "Sensibles" (Sensitive). Ni siquiera los empleados de Vercel o los atacantes infiltrados pudieron desencriptarlas. En Zity, hemos mitigado este riesgo asegurando que todas las credenciales maestras (como la `SUPABASE_SERVICE_ROLE_KEY`) estén marcadas estrictamente como Sensibles, por lo que nuestros datos críticos nunca estuvieron en riesgo ante esta brecha.
+* **¿Qué pasó en palabras sencillas?** Imagina que Vercel es como un banco súper seguro. Los hackers no lograron romper la puerta principal del banco. Lo que hicieron fue engañar a un proveedor de servicios externo (en la vida real, una herramienta llamada Context.ai) para robarle unas llaves de acceso. Con esas llaves, lograron entrar a la red de Vercel sin ser detectados.
+* **¿Qué lograron robar?** Una vez adentro, los hackers revisaron algunos proyectos y se llevaron información pública o de muy bajo riesgo (conocida técnicamente como "variables no sensibles").
+* **¿Por qué Zity está a salvo?** Porque dentro de Vercel existe una "caja fuerte virtual" para las contraseñas reales. Si tú marcas una contraseña como "Sensible", Vercel le pone un candado criptográfico que ni siquiera sus propios empleados (ni mucho menos los hackers) pueden abrir. En nuestro proyecto, la regla de oro es que todas las llaves maestras de la base de datos están guardadas en esa caja fuerte. Por eso, aunque los hackers lograron colarse, jamás pudieron leer nuestras credenciales críticas.
 
 ### 6.2 Los "Hackeos" a Proyectos de Supabase
 * **¿Qué pasó?** Aunque la plataforma de Supabase no ha sufrido hackeos estructurales que extraigan información desde el núcleo, la prensa ha reportado decenas de exposiciones masivas de datos en startups que usan Supabase.
